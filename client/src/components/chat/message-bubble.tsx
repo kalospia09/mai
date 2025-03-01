@@ -3,7 +3,7 @@ import { format } from "date-fns";
 import { Check, CheckCheck } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useChat } from "@/hooks/use-chat";
-import { Card } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -22,49 +22,55 @@ export function MessageBubble({ message, onReply }: MessageBubbleProps) {
   const isMine = message.senderId === user?.id;
 
   return (
-    <div className={`flex ${isMine ? 'justify-end' : 'justify-start'} mb-2`}>
+    <div className={`flex ${isMine ? 'justify-end' : 'justify-start'} mb-1`}>
       <ContextMenu>
         <ContextMenuTrigger>
-          <Card
-            className={`max-w-[60%] p-2 ${
-              isMine ? 'bg-primary text-primary-foreground' : 'bg-secondary'
-            }`}
+          <div
+            className={cn(
+              "px-3 py-1.5 rounded-2xl max-w-[85%] group relative",
+              isMine ? "bg-primary text-primary-foreground" : "bg-muted",
+              message.isDeleted && "opacity-50"
+            )}
           >
             {message.isDeleted ? (
               <p className="italic text-sm">This message was deleted</p>
             ) : (
               <>
                 {message.replyToId && (
-                  <div className="mb-1 p-1 border-l-2 text-sm opacity-80">
+                  <div className="mb-1 pl-2 border-l-2 text-xs opacity-75">
                     Replying to a message
                   </div>
                 )}
 
-                <p className="break-words text-sm">{message.content}</p>
+                <p className="break-words text-sm leading-relaxed">{message.content}</p>
 
                 {message.mediaUrl && (
-                  <div className="mt-1">
+                  <div className="mt-1 rounded overflow-hidden">
                     {message.mediaUrl.endsWith('.mp3') ? (
-                      <audio controls src={message.mediaUrl} className="w-full" />
+                      <audio controls src={message.mediaUrl} className="w-full h-8" />
                     ) : (
-                      <img src={message.mediaUrl} alt="Media" className="max-w-full rounded" />
+                      <img src={message.mediaUrl} alt="Media" className="max-w-full" />
                     )}
                   </div>
                 )}
 
-                <div className="flex items-center justify-end gap-1 mt-1 text-xs opacity-70">
-                  <span>{format(new Date(message.timestamp), 'HH:mm')}</span>
+                <div className="flex items-center justify-end gap-0.5 mt-0.5">
+                  <span className="text-[10px] opacity-75">
+                    {format(new Date(message.timestamp), 'HH:mm')}
+                  </span>
                   {isMine && (
-                    message.isRead ? (
-                      <CheckCheck size={12} />
-                    ) : (
-                      <Check size={12} />
-                    )
+                    <span className="opacity-75">
+                      {message.isRead ? (
+                        <CheckCheck size={12} />
+                      ) : (
+                        <Check size={12} />
+                      )}
+                    </span>
                   )}
                 </div>
               </>
             )}
-          </Card>
+          </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem onSelect={() => onReply(message)}>

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "./use-auth";
 import { Message } from "@shared/schema";
 import { useQuery } from "@tanstack/react-query";
@@ -23,7 +23,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [onlineUsers, setOnlineUsers] = useState<number[]>([]);
   const [typingUsers, setTypingUsers] = useState<number[]>([]);
   const [statusData, setStatusData] = useState<ChatContextType['statusData']>([]);
-  const [isWindowFocused, setIsWindowFocused] = useState(true);
+  const messageQueue = useRef<Set<string>>(new Set());
 
   const token = localStorage.getItem('authToken');
 
@@ -47,29 +47,37 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     }
   }, [initialMessages]);
 
-  // Handle window focus changes
+  // Handle window focus/blur with RAF for better accuracy
   useEffect(() => {
-    const onVisibilityChange = () => {
-      const isVisible = document.visibilityState === 'visible';
-      setIsWindowFocused(isVisible);
+    let focused = true;
+    let rafId: number;
 
-      if (socket && user) {
-        socket.send(JSON.stringify({
-          type: "status_update",
-          payload: { isOnline: isVisible }
-        }));
+    const checkFocus = () => {
+      const isVisible = !document.hidden;
+      if (focused !== isVisible) {
+        focused = isVisible;
+        if (socket && user) {
+          socket.send(JSON.stringify({
+            type: "status_update",
+            payload: { isOnline: isVisible }
+          }));
+        }
       }
+      rafId = requestAnimationFrame(checkFocus);
     };
 
-    document.addEventListener('visibilitychange', onVisibilityChange);
+    checkFocus();
+    document.addEventListener('visibilitychange', checkFocus);
+
     return () => {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
+      cancelAnimationFrame(rafId);
+      document.removeEventListener('visibilitychange', checkFocus);
     };
   }, [socket, user]);
 
-  // Mark messages as read when window is focused
+  // Mark messages as read when visible and focused
   useEffect(() => {
-    if (isWindowFocused && user && socket) {
+    if (!document.hidden && user && socket) {
       const unreadMessages = messages.filter(
         msg => msg.senderId !== user.id && !msg.isRead
       );
@@ -81,7 +89,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }));
       });
     }
-  }, [isWindowFocused, messages, user, socket]);
+  }, [messages, user, socket, document.hidden]);
 
   useEffect(() => {
     if (!user || !token) {
@@ -115,26 +123,28 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           token,
           payload: { 
             userId: user.id,
-            isOnline: isWindowFocused
+            isOnline: !document.hidden
           } 
         }));
       };
 
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        console.log("Received WebSocket message:", data.type);
 
         switch (data.type) {
           case "new_message":
-            setMessages(prev => [...prev, data.payload]);
-            // Automatically mark as read if window is focused
-            if (isWindowFocused && data.payload.senderId !== user.id) {
-              ws.send(JSON.stringify({
-                type: "read",
-                payload: { messageId: data.payload.id }
-              }));
+            // Prevent duplicate messages
+            if (!messageQueue.current.has(data.payload.id)) {
+              setMessages(prev => [...prev, data.payload]);
+              if (!document.hidden && data.payload.senderId !== user.id) {
+                ws.send(JSON.stringify({
+                  type: "read",
+                  payload: { messageId: data.payload.id }
+                }));
+              }
             }
             break;
+
           case "message_read":
             setMessages(prev => 
               prev.map(msg => 
@@ -142,6 +152,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
               )
             );
             break;
+
           case "message_deleted":
             setMessages(prev => 
               prev.map(msg => 
@@ -149,6 +160,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
               )
             );
             break;
+
           case "status_update":
             setStatusData(data.payload);
             setOnlineUsers(data.payload
@@ -156,6 +168,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
               .map((status: any) => status.userId)
             );
             break;
+
           case "typing":
             if (data.payload.isTyping) {
               setTypingUsers(prev => [...prev, data.payload.userId]);
@@ -163,6 +176,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
               setTypingUsers(prev => prev.filter(id => id !== data.payload.userId));
             }
             break;
+
           case "error":
             console.error("WebSocket error from server:", data.payload);
             if (data.payload === "Not authenticated" || data.payload === "Invalid token") {
@@ -207,15 +221,24 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const sendMessage = useCallback((content: string, replyToId?: number, mediaUrl?: string) => {
     if (!socket || !user) return;
 
+    const messageId = Date.now().toString();
+    messageQueue.current.add(messageId);
+
     socket.send(JSON.stringify({
       type: "message",
       payload: {
+        id: messageId,
         senderId: user.id,
         content,
         replyToId,
         mediaUrl
       }
     }));
+
+    // Clean up message queue after a delay
+    setTimeout(() => {
+      messageQueue.current.delete(messageId);
+    }, 5000);
   }, [socket, user]);
 
   const markAsRead = useCallback((messageId: number) => {
