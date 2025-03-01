@@ -1,11 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
+import { Form } from "@/components/ui/form";
 import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { useAuth } from "@/hooks/use-auth";
-import { insertUserSchema } from "@shared/schema";
 import { useLocation } from "wouter";
 
 export default function AuthPage() {
@@ -18,7 +15,6 @@ export default function AuthPage() {
   }
 
   const loginForm = useForm({
-    resolver: zodResolver(insertUserSchema),
     defaultValues: { username: "", password: "" },
   });
 

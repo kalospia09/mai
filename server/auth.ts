@@ -18,7 +18,7 @@ export function setupAuth(app: Express) {
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false,
+      secure: false, // Set to true in production with HTTPS
       maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
       sameSite: 'lax',
       path: '/'
@@ -32,10 +32,22 @@ export function setupAuth(app: Express) {
 
   passport.use(new LocalStrategy(async (username, password, done) => {
     try {
-      const user = await storage.getUserByUsername(username);
-      if (!user || user.password !== password) {
-        return done(null, false, { message: "Invalid credentials" });
+      if (username !== 'user1' && username !== 'user2') {
+        return done(null, false, { message: "Invalid user" });
       }
+
+      const userId = username === 'user1' ? 1 : 2;
+      const user = await storage.getUser(userId);
+
+      if (!user) {
+        return done(null, false, { message: "User not found" });
+      }
+
+      // For this demo, we'll use a simple password check
+      if (password !== user.password) {
+        return done(null, false, { message: "Invalid password" });
+      }
+
       return done(null, user);
     } catch (err) {
       return done(err);
