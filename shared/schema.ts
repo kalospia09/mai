@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -13,6 +13,10 @@ export const messages = pgTable("messages", {
   content: text("content").notNull(),
   userId: integer("user_id").references(() => users.id).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  replyToId: integer("reply_to_id").references(() => messages.id),
+  mediaUrl: text("media_url"),
+  isRead: boolean("is_read").default(false).notNull(),
+  isDeleted: boolean("is_deleted").default(false).notNull(),
 });
 
 export const insertUserSchema = createInsertSchema(users).pick({
@@ -23,6 +27,8 @@ export const insertUserSchema = createInsertSchema(users).pick({
 export const insertMessageSchema = createInsertSchema(messages).pick({
   content: true,
   userId: true,
+  replyToId: true,
+  mediaUrl: true,
 });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;

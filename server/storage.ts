@@ -6,6 +6,8 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   getMessages(): Promise<ChatMessage[]>;
   createMessage(message: InsertMessage): Promise<Message>;
+  markMessageAsRead(messageId: number): Promise<Message>;
+  deleteMessage(messageId: number): Promise<Message>;
 }
 
 export class MemStorage implements IStorage {
@@ -39,13 +41,16 @@ export class MemStorage implements IStorage {
   }
 
   async getMessages(): Promise<ChatMessage[]> {
-    return Array.from(this.messages.values()).map(msg => {
-      const user = this.users.get(msg.userId);
-      return {
-        ...msg,
-        username: user?.username || 'Unknown'
-      };
-    }).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    return Array.from(this.messages.values())
+      .filter(msg => !msg.isDeleted)
+      .map(msg => {
+        const user = this.users.get(msg.userId);
+        return {
+          ...msg,
+          username: user?.username || 'Unknown'
+        };
+      })
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 
   async createMessage(insertMessage: InsertMessage): Promise<Message> {
@@ -54,9 +59,29 @@ export class MemStorage implements IStorage {
       ...insertMessage,
       id,
       createdAt: new Date(),
+      isRead: false,
+      isDeleted: false,
     };
     this.messages.set(id, message);
     return message;
+  }
+
+  async markMessageAsRead(messageId: number): Promise<Message> {
+    const message = this.messages.get(messageId);
+    if (!message) throw new Error("Message not found");
+
+    const updatedMessage = { ...message, isRead: true };
+    this.messages.set(messageId, updatedMessage);
+    return updatedMessage;
+  }
+
+  async deleteMessage(messageId: number): Promise<Message> {
+    const message = this.messages.get(messageId);
+    if (!message) throw new Error("Message not found");
+
+    const updatedMessage = { ...message, isDeleted: true };
+    this.messages.set(messageId, updatedMessage);
+    return updatedMessage;
   }
 }
 
