@@ -60,6 +60,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     clearInterval(interval);
   });
 
+  async function broadcastStatus() {
+    // Get all users and their status
+    const allUsers = await Promise.all([1, 2].map(async (id) => {
+      const user = await storage.getUser(id);
+      return {
+        userId: id,
+        isOnline: Array.from(wss.clients).some(
+          (client: WSClient) => client.userId === id
+        ),
+        lastSeen: user?.lastSeen
+      };
+    }));
+
+    broadcast({ 
+      type: "status_update", 
+      payload: allUsers
+    });
+  }
+
   wss.on("connection", (ws: WSClient) => {
     console.log("New WebSocket connection established");
 
@@ -92,7 +111,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ws.userId = user.id;
           await storage.updateUserStatus(user.id, true);
           console.log("WebSocket auth successful - User:", user.id);
-          broadcastStatus();
+          await broadcastStatus(); // Broadcast status immediately after successful auth
           return;
         }
 
@@ -142,7 +161,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (ws.userId) {
         await storage.updateUserStatus(ws.userId, false);
         await storage.updateLastSeen(ws.userId);
-        broadcastStatus();
+        await broadcastStatus(); // Broadcast status immediately after disconnection
       }
     });
 
@@ -156,16 +175,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (client.readyState === WebSocket.OPEN) {
         client.send(JSON.stringify(message));
       }
-    });
-  }
-
-  function broadcastStatus() {
-    broadcast({ 
-      type: "status_update", 
-      payload: Array.from(wss.clients).map((client: WSClient) => ({
-        userId: client.userId,
-        isOnline: true
-      }))
     });
   }
 

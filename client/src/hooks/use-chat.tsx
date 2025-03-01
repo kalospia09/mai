@@ -11,6 +11,7 @@ type ChatContextType = {
   setTyping: (isTyping: boolean) => void;
   onlineUsers: number[];
   typingUsers: number[];
+  statusData: Array<{ userId: number; isOnline: boolean; lastSeen: string | null }>;
 };
 
 const ChatContext = createContext<ChatContextType | null>(null);
@@ -21,6 +22,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<number[]>([]);
   const [typingUsers, setTypingUsers] = useState<number[]>([]);
+  const [statusData, setStatusData] = useState<ChatContextType['statusData']>([]);
 
   const token = localStorage.getItem('authToken');
 
@@ -102,7 +104,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             );
             break;
           case "status_update":
-            setOnlineUsers(data.payload.map((u: any) => u.userId));
+            setStatusData(data.payload);
+            // Update online users based on status data
+            setOnlineUsers(data.payload
+              .filter((status: any) => status.isOnline)
+              .map((status: any) => status.userId)
+            );
             break;
           case "typing":
             if (data.payload.isTyping) {
@@ -152,7 +159,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         socket.close();
       }
     };
-  }, [user, token, socket === null]); // Reconnect if socket is null and user is authenticated
+  }, [user, token, socket === null]);
 
   const sendMessage = (content: string, replyToId?: number, mediaUrl?: string) => {
     if (!socket || !user) return;
@@ -200,7 +207,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       deleteMessage,
       setTyping,
       onlineUsers,
-      typingUsers
+      typingUsers,
+      statusData
     }}>
       {children}
     </ChatContext.Provider>
