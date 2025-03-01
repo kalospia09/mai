@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { useAuth } from "./use-auth";
 import { Message } from "@shared/schema";
 import { useQuery } from "@tanstack/react-query";
@@ -23,6 +23,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [onlineUsers, setOnlineUsers] = useState<number[]>([]);
   const [typingUsers, setTypingUsers] = useState<number[]>([]);
   const [statusData, setStatusData] = useState<ChatContextType['statusData']>([]);
+  const [isWindowFocused, setIsWindowFocused] = useState(true);
 
   const token = localStorage.getItem('authToken');
 
@@ -45,6 +46,42 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       setMessages(initialMessages);
     }
   }, [initialMessages]);
+
+  // Handle window focus changes
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      const isVisible = document.visibilityState === 'visible';
+      setIsWindowFocused(isVisible);
+
+      if (socket && user) {
+        socket.send(JSON.stringify({
+          type: "status_update",
+          payload: { isOnline: isVisible }
+        }));
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [socket, user]);
+
+  // Mark messages as read when window is focused
+  useEffect(() => {
+    if (isWindowFocused && user && socket) {
+      const unreadMessages = messages.filter(
+        msg => msg.senderId !== user.id && !msg.isRead
+      );
+
+      unreadMessages.forEach(msg => {
+        socket.send(JSON.stringify({
+          type: "read",
+          payload: { messageId: msg.id }
+        }));
+      });
+    }
+  }, [isWindowFocused, messages, user, socket]);
 
   useEffect(() => {
     if (!user || !token) {
@@ -72,12 +109,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
       ws.onopen = () => {
         console.log("WebSocket connection established");
-        reconnectAttempts = 0; // Reset reconnect attempts on successful connection
-        // Send auth message with token immediately after connection
+        reconnectAttempts = 0;
         ws.send(JSON.stringify({ 
           type: "auth", 
           token,
-          payload: { userId: user.id } 
+          payload: { 
+            userId: user.id,
+            isOnline: isWindowFocused
+          } 
         }));
       };
 
@@ -88,6 +127,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         switch (data.type) {
           case "new_message":
             setMessages(prev => [...prev, data.payload]);
+            // Automatically mark as read if window is focused
+            if (isWindowFocused && data.payload.senderId !== user.id) {
+              ws.send(JSON.stringify({
+                type: "read",
+                payload: { messageId: data.payload.id }
+              }));
+            }
             break;
           case "message_read":
             setMessages(prev => 
@@ -105,7 +151,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             break;
           case "status_update":
             setStatusData(data.payload);
-            // Update online users based on status data
             setOnlineUsers(data.payload
               .filter((status: any) => status.isOnline)
               .map((status: any) => status.userId)
@@ -135,14 +180,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       ws.onclose = (event) => {
         console.log("WebSocket connection closed", event.code, event.reason);
 
-        // Attempt to reconnect after a delay if user is still authenticated
         if (user && token) {
           reconnectAttempts++;
           console.log(`Reconnection attempt ${reconnectAttempts} of ${maxReconnectAttempts}`);
 
           const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
           reconnectTimer = setTimeout(() => {
-            setSocket(null); // This will trigger a reconnect
+            setSocket(null);
           }, delay);
         }
       };
@@ -155,13 +199,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     return () => {
       clearTimeout(reconnectTimer);
       if (socket) {
-        console.log("Cleaning up WebSocket connection");
         socket.close();
       }
     };
   }, [user, token, socket === null]);
 
-  const sendMessage = (content: string, replyToId?: number, mediaUrl?: string) => {
+  const sendMessage = useCallback((content: string, replyToId?: number, mediaUrl?: string) => {
     if (!socket || !user) return;
 
     socket.send(JSON.stringify({
@@ -173,31 +216,31 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         mediaUrl
       }
     }));
-  };
+  }, [socket, user]);
 
-  const markAsRead = (messageId: number) => {
+  const markAsRead = useCallback((messageId: number) => {
     if (!socket) return;
     socket.send(JSON.stringify({
       type: "read",
       payload: { messageId }
     }));
-  };
+  }, [socket]);
 
-  const deleteMessage = (messageId: number) => {
+  const deleteMessage = useCallback((messageId: number) => {
     if (!socket) return;
     socket.send(JSON.stringify({
       type: "delete",
       payload: { messageId }
     }));
-  };
+  }, [socket]);
 
-  const setTyping = (isTyping: boolean) => {
+  const setTyping = useCallback((isTyping: boolean) => {
     if (!socket || !user) return;
     socket.send(JSON.stringify({
       type: "typing",
       payload: { isTyping }
     }));
-  };
+  }, [socket, user]);
 
   return (
     <ChatContext.Provider value={{

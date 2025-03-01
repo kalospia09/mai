@@ -146,6 +146,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
             await storage.deleteMessage(message.payload.messageId);
             broadcast({ type: "message_deleted", payload: message.payload });
             break;
+
+          case "status_update":
+            await storage.updateUserStatus(ws.userId, message.payload.isOnline);
+            if (!message.payload.isOnline) {
+              await storage.updateLastSeen(ws.userId);
+            }
+            await broadcastStatus();
+            break;
         }
       } catch (err) {
         console.error("WebSocket error:", err);
