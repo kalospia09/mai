@@ -2,7 +2,6 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useAuth } from "@/hooks/use-auth";
 import { useChat } from "@/hooks/use-chat";
 import { Phone, Video, MoreVertical } from "lucide-react";
-import { format } from "date-fns";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,11 +11,10 @@ import {
 
 export function ChatHeader() {
   const { user, logoutMutation } = useAuth();
-  const { onlineUsers, typingUsers, statusData } = useChat();
+  const { onlineUsers, typingUsers } = useChat();
   const otherUserId = user?.id === 1 ? 2 : 1;
   const isOtherOnline = onlineUsers.includes(otherUserId);
   const isOtherTyping = typingUsers.includes(otherUserId);
-  const otherUserStatus = statusData?.find(status => status.userId === otherUserId);
 
   return (
     <div className="flex items-center justify-between p-4 border-b">
@@ -32,9 +30,7 @@ export function ChatHeader() {
           </h2>
           <p className="text-sm text-muted-foreground">
             {isOtherTyping ? 'typing...' : 
-              isOtherOnline ? 'online' : 
-              otherUserStatus?.lastSeen ? `last seen ${format(new Date(otherUserStatus.lastSeen), 'HH:mm')}` :
-              'offline'}
+              isOtherOnline ? 'online' : 'offline'}
           </p>
         </div>
       </div>

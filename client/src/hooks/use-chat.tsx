@@ -11,7 +11,6 @@ type ChatContextType = {
   setTyping: (isTyping: boolean) => void;
   onlineUsers: number[];
   typingUsers: number[];
-  statusData: Array<{ userId: number; isOnline: boolean; lastSeen: string | null }>;
 };
 
 const ChatContext = createContext<ChatContextType | null>(null);
@@ -22,10 +21,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<number[]>([]);
   const [typingUsers, setTypingUsers] = useState<number[]>([]);
-  const [statusData, setStatusData] = useState<ChatContextType['statusData']>([]);
+  const messageQueue = useRef<Set<string>>(new Set());
   const documentFocused = useRef<boolean>(document.hasFocus());
   const documentVisible = useRef<boolean>(!document.hidden);
-  const messageQueue = useRef<Set<string>>(new Set());
 
   const token = localStorage.getItem('authToken');
 
@@ -53,19 +51,16 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const handleVisibilityChange = () => {
       documentVisible.current = !document.hidden;
-      console.log('Visibility changed:', documentVisible.current);
       updateUserStatus();
     };
 
     const handleFocusChange = () => {
       documentFocused.current = document.hasFocus();
-      console.log('Focus changed:', documentFocused.current);
       updateUserStatus();
     };
 
     const updateUserStatus = () => {
       const isActive = documentVisible.current && documentFocused.current;
-      console.log('Window active state:', isActive);
       if (socket && user) {
         socket.send(JSON.stringify({
           type: "status_update",
@@ -95,7 +90,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         );
 
         if (unreadMessages.length > 0) {
-          console.log('Marking messages as read:', unreadMessages.length);
           unreadMessages.forEach(msg => {
             socket.send(JSON.stringify({
               type: "read",
@@ -164,7 +158,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        console.log("Received WebSocket message:", data.type);
 
         switch (data.type) {
           case "new_message":
@@ -173,8 +166,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
               setMessages(prev => [...prev, data.payload]);
               const isActive = documentVisible.current && documentFocused.current;
               if (isActive && data.payload.senderId !== user.id) {
-                console.log('Auto-marking message as read:', data.payload.id);
-                ws.send(JSON.stringify({
+                socket.send(JSON.stringify({
                   type: "read",
                   payload: { messageId: data.payload.id }
                 }));
@@ -186,7 +178,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             break;
 
           case "message_read":
-            console.log('Message marked as read:', data.payload.messageId);
             setMessages(prev => 
               prev.map(msg => 
                 msg.id === data.payload.messageId ? { ...msg, isRead: true } : msg
@@ -203,8 +194,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             break;
 
           case "status_update":
-            console.log('Status update received:', data.payload);
-            setStatusData(data.payload);
             setOnlineUsers(data.payload
               .filter((status: any) => status.isOnline)
               .map((status: any) => status.userId)
@@ -280,7 +269,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const markAsRead = useCallback((messageId: number) => {
     if (!socket || !documentVisible.current || !documentFocused.current) return;
-    console.log('Manually marking message as read:', messageId);
     socket.send(JSON.stringify({
       type: "read",
       payload: { messageId }
@@ -312,7 +300,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       setTyping,
       onlineUsers,
       typingUsers,
-      statusData
     }}>
       {children}
     </ChatContext.Provider>
