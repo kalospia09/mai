@@ -38,18 +38,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         switch (message.type) {
           case "auth":
-            ws.userId = message.payload.userId;
-            await storage.updateUserStatus(message.payload.userId, true);
+            const userId = message.payload.userId;
+            const user = await storage.getUser(userId);
+            if (!user) {
+              ws.send(JSON.stringify({ type: "error", payload: "Invalid user" }));
+              ws.close();
+              return;
+            }
+            ws.userId = userId;
+            await storage.updateUserStatus(userId, true);
             broadcastStatus();
             break;
 
           case "message":
+            if (!ws.userId) {
+              ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
+              return;
+            }
             const validatedMessage = insertMessageSchema.parse(message.payload);
             const newMessage = await storage.createMessage(validatedMessage);
             broadcast({ type: "new_message", payload: newMessage });
             break;
 
           case "typing":
+            if (!ws.userId) {
+              ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
+              return;
+            }
             broadcast({ 
               type: "typing", 
               payload: { userId: ws.userId, isTyping: message.payload.isTyping } 
@@ -57,18 +72,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
             break;
 
           case "read":
+            if (!ws.userId) {
+              ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
+              return;
+            }
             await storage.markMessageAsRead(message.payload.messageId);
             broadcast({ type: "message_read", payload: message.payload });
             break;
 
           case "delete":
+            if (!ws.userId) {
+              ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
+              return;
+            }
             await storage.deleteMessage(message.payload.messageId);
             broadcast({ type: "message_deleted", payload: message.payload });
             break;
         }
       } catch (err) {
         console.error("WebSocket error:", err);
-        ws.send(JSON.stringify({ type: "error", payload: err }));
+        ws.send(JSON.stringify({ type: "error", payload: err instanceof Error ? err.message : "Unknown error" }));
       }
     });
 

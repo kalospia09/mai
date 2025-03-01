@@ -6,6 +6,9 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
+// Add trust proxy setting before any middleware
+app.set("trust proxy", 1);
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -32,6 +35,11 @@ app.use((req, res, next) => {
       log(logLine);
     }
   });
+
+  // Add session debug logging
+  if (req.session) {
+    log(`Session ID: ${req.session.id}, authenticated: ${req.isAuthenticated()}`);
+  }
 
   next();
 });

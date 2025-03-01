@@ -24,6 +24,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const { data: initialMessages } = useQuery<Message[]>({
     queryKey: ["/api/messages"],
+    enabled: !!user // Only fetch messages when user is authenticated
   });
 
   useEffect(() => {
@@ -33,15 +34,22 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [initialMessages]);
 
   useEffect(() => {
-    if (!user) return;
+    // Only establish WebSocket connection if user is authenticated
+    if (!user) {
+      if (socket) {
+        socket.close();
+        setSocket(null);
+      }
+      return;
+    }
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    // Updated WebSocket path to match server
     const wsUrl = `${protocol}//${window.location.host}/ws/chat`;
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
       console.log("WebSocket connection established");
+      // Send auth message immediately after connection
       ws.send(JSON.stringify({ type: "auth", payload: { userId: user.id } }));
     };
 
@@ -77,6 +85,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             setTypingUsers(prev => prev.filter(id => id !== data.payload.userId));
           }
           break;
+        case "error":
+          console.error("WebSocket error from server:", data.payload);
+          break;
       }
     };
 
@@ -84,13 +95,23 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       console.error("WebSocket error:", error);
     };
 
+    ws.onclose = () => {
+      console.log("WebSocket connection closed");
+      // Attempt to reconnect after a delay if user is still authenticated
+      if (user) {
+        setTimeout(() => {
+          setSocket(null); // This will trigger a reconnect
+        }, 5000);
+      }
+    };
+
     setSocket(ws);
 
     return () => {
-      console.log("Closing WebSocket connection");
+      console.log("Cleaning up WebSocket connection");
       ws.close();
     };
-  }, [user]);
+  }, [user, socket === null]); // Reconnect if socket is null and user is authenticated
 
   const sendMessage = (content: string, replyToId?: number, mediaUrl?: string) => {
     if (!socket || !user) return;
