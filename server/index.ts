@@ -1,40 +1,11 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
-import { storage } from "./storage";
-import session from "express-session";
-import cors from 'cors';
 
 const app = express();
-
-// Configure CORS before any middleware
-app.use(cors({
-  origin: true, // Allow same origin
-  credentials: true // Allow credentials
-}));
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Add trust proxy setting before any middleware
-app.set("trust proxy", 1);
-
-// Configure session before any routes
-app.use(session({
-  secret: process.env.SESSION_SECRET!,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: false, // Set to true in production with HTTPS
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-    sameSite: 'lax',
-    path: '/',
-    httpOnly: true
-  },
-  store: storage.sessionStore
-}));
-
-// Logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -62,11 +33,6 @@ app.use((req, res, next) => {
     }
   });
 
-  // Add session debug logging
-  if (req.session) {
-    log(`Session ID: ${req.session.id}, authenticated: ${req.isAuthenticated?.()}, session data: ${JSON.stringify(req.session)}`);
-  }
-
   next();
 });
 
@@ -78,15 +44,20 @@ app.use((req, res, next) => {
     const message = err.message || "Internal Server Error";
 
     res.status(status).json({ message });
-    console.error('Error:', err);
+    throw err;
   });
 
+  // importantly only setup vite in development and after
+  // setting up all the other routes so the catch-all route
+  // doesn't interfere with the other routes
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
     serveStatic(app);
   }
 
+  // ALWAYS serve the app on port 5000
+  // this serves both the API and the client
   const port = 5000;
   server.listen({
     port,

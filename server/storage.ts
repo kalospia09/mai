@@ -1,52 +1,24 @@
-import { User, Message, InsertUser, InsertMessage } from "@shared/schema";
-import { randomBytes } from "crypto";
-
-// Predefined users
-const PREDEFINED_USERS: User[] = [
-  {
-    id: 1,
-    username: "user1",
-    password: "1",
-    authToken: null,
-    lastSeen: new Date(),
-    isOnline: false,
-  },
-  {
-    id: 2,
-    username: "user2",
-    password: "2",
-    authToken: null,
-    lastSeen: new Date(),
-    isOnline: false,
-  }
-];
+import { users, messages, type User, type InsertUser, type Message, type InsertMessage, type ChatMessage } from "@shared/schema";
 
 export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
-  getUserByToken(token: string): Promise<User | undefined>;
-  generateUserToken(id: number): Promise<string>;
-  updateUserStatus(id: number, isOnline: boolean): Promise<void>;
-  updateLastSeen(id: number): Promise<void>;
-
-  getMessages(): Promise<Message[]>;
+  createUser(user: InsertUser): Promise<User>;
+  getMessages(): Promise<ChatMessage[]>;
   createMessage(message: InsertMessage): Promise<Message>;
-  markMessageAsRead(id: number): Promise<void>;
-  deleteMessage(id: number): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
   private users: Map<number, User>;
   private messages: Map<number, Message>;
+  private currentUserId: number;
+  private currentMessageId: number;
 
   constructor() {
     this.users = new Map();
     this.messages = new Map();
-
-    // Initialize with predefined users
-    PREDEFINED_USERS.forEach(user => {
-      this.users.set(user.id, user);
-    });
+    this.currentUserId = 1;
+    this.currentMessageId = 1;
   }
 
   async getUser(id: number): Promise<User | undefined> {
@@ -59,65 +31,32 @@ export class MemStorage implements IStorage {
     );
   }
 
-  async getUserByToken(token: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.authToken === token,
-    );
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const id = this.currentUserId++;
+    const user: User = { ...insertUser, id };
+    this.users.set(id, user);
+    return user;
   }
 
-  async generateUserToken(id: number): Promise<string> {
-    const user = await this.getUser(id);
-    if (user) {
-      const token = randomBytes(32).toString('hex');
-      this.users.set(id, { ...user, authToken: token });
-      return token;
-    }
-    throw new Error("User not found");
-  }
-
-  async updateUserStatus(id: number, isOnline: boolean): Promise<void> {
-    const user = await this.getUser(id);
-    if (user) {
-      this.users.set(id, { ...user, isOnline });
-    }
-  }
-
-  async updateLastSeen(id: number): Promise<void> {
-    const user = await this.getUser(id);
-    if (user) {
-      this.users.set(id, { ...user, lastSeen: new Date() });
-    }
-  }
-
-  async getMessages(): Promise<Message[]> {
-    return Array.from(this.messages.values());
+  async getMessages(): Promise<ChatMessage[]> {
+    return Array.from(this.messages.values()).map(msg => {
+      const user = this.users.get(msg.userId);
+      return {
+        ...msg,
+        username: user?.username || 'Unknown'
+      };
+    }).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 
   async createMessage(insertMessage: InsertMessage): Promise<Message> {
-    const id = 100 + this.messages.size; // Start message IDs from 100
+    const id = this.currentMessageId++;
     const message: Message = {
-      id,
-      timestamp: new Date(),
-      isRead: false,
-      isDeleted: false,
       ...insertMessage,
+      id,
+      createdAt: new Date(),
     };
     this.messages.set(id, message);
     return message;
-  }
-
-  async markMessageAsRead(id: number): Promise<void> {
-    const message = this.messages.get(id);
-    if (message) {
-      this.messages.set(id, { ...message, isRead: true });
-    }
-  }
-
-  async deleteMessage(id: number): Promise<void> {
-    const message = this.messages.get(id);
-    if (message) {
-      this.messages.set(id, { ...message, isDeleted: true });
-    }
   }
 }
 

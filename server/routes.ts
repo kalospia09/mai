@@ -1,190 +1,136 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { setupAuth } from "./auth";
 import { storage } from "./storage";
+import session from "express-session";
+import passport from "passport";
+import { Strategy as LocalStrategy } from "passport-local";
+import { insertUserSchema, insertMessageSchema } from "@shared/schema";
 import { z } from "zod";
-import { insertMessageSchema } from "@shared/schema";
 
-interface WSClient extends WebSocket {
-  userId?: number;
-  isAlive?: boolean;
+declare module "express-session" {
+  interface SessionData {
+    userId: number;
+  }
 }
 
-type WSMessage = {
-  type: string;
-  payload: any;
-  token?: string;
-};
-
 export async function registerRoutes(app: Express): Promise<Server> {
-  setupAuth(app);
+  // Session setup
+  app.use(session({
+    secret: process.env.SESSION_SECRET || "dev_secret",
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: process.env.NODE_ENV === "production" }
+  }));
 
-  const httpServer = createServer(app);
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws/chat' });
+  // Passport setup
+  app.use(passport.initialize());
+  app.use(passport.session());
 
+  passport.use(new LocalStrategy(async (username, password, done) => {
+    try {
+      const user = await storage.getUserByUsername(username);
+      if (!user || user.password !== password) {
+        return done(null, false);
+      }
+      return done(null, user);
+    } catch (err) {
+      return done(err);
+    }
+  }));
+
+  passport.serializeUser((user: any, done) => {
+    done(null, user.id);
+  });
+
+  passport.deserializeUser(async (id: number, done) => {
+    try {
+      const user = await storage.getUser(id);
+      done(null, user);
+    } catch (err) {
+      done(err);
+    }
+  });
+
+  // Auth routes
+  app.post("/api/register", async (req, res) => {
+    try {
+      const data = insertUserSchema.parse(req.body);
+      const existingUser = await storage.getUserByUsername(data.username);
+      if (existingUser) {
+        return res.status(400).json({ message: "Username already taken" });
+      }
+      const user = await storage.createUser(data);
+      req.login(user, (err) => {
+        if (err) throw err;
+        res.json(user);
+      });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ message: "Invalid input" });
+      } else {
+        res.status(500).json({ message: "Server error" });
+      }
+    }
+  });
+
+  app.post("/api/login", passport.authenticate("local"), (req, res) => {
+    res.json(req.user);
+  });
+
+  app.post("/api/logout", (req, res) => {
+    req.logout(() => {
+      res.json({ message: "Logged out" });
+    });
+  });
+
+  app.get("/api/me", (req, res) => {
+    if (!req.user) {
+      return res.status(401).json({ message: "Not authenticated" });
+    }
+    res.json(req.user);
+  });
+
+  // Message routes
   app.get("/api/messages", async (req, res) => {
-    const authHeader = req.headers["authorization"];
-    const token = authHeader && authHeader.split(" ")[1];
-
-    if (!token) {
-      return res.sendStatus(401);
+    if (!req.user) {
+      return res.status(401).json({ message: "Not authenticated" });
     }
-
-    const user = await storage.getUserByToken(token);
-    if (!user) {
-      return res.sendStatus(401);
-    }
-
     const messages = await storage.getMessages();
     res.json(messages);
   });
 
-  function heartbeat(ws: WSClient) {
-    ws.isAlive = true;
-  }
+  const httpServer = createServer(app);
+  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
-  const interval = setInterval(() => {
-    wss.clients.forEach((ws: WSClient) => {
-      if (ws.isAlive === false) {
-        console.log("Terminating inactive connection");
-        return ws.terminate();
-      }
-
-      ws.isAlive = false;
-      ws.ping();
-    });
-  }, 30000);
-
-  wss.on('close', function close() {
-    clearInterval(interval);
-  });
-
-  async function broadcastStatus() {
-    // Get all users and their status
-    const allUsers = await Promise.all([1, 2].map(async (id) => {
-      const user = await storage.getUser(id);
-      return {
-        userId: id,
-        isOnline: Array.from(wss.clients).some(
-          (client: WSClient) => client.userId === id
-        ),
-        lastSeen: user?.lastSeen
-      };
-    }));
-
-    broadcast({ 
-      type: "status_update", 
-      payload: allUsers
-    });
-  }
-
-  wss.on("connection", (ws: WSClient) => {
-    console.log("New WebSocket connection established");
-
-    ws.isAlive = true;
-    ws.on('pong', () => heartbeat(ws));
-
-    ws.on("message", async (data: string) => {
-      try {
-        const message: WSMessage = JSON.parse(data);
-        console.log("Received WebSocket message:", message.type);
-
-        // Handle auth separately as it needs the token
-        if (message.type === "auth") {
-          const token = message.token;
-          if (!token) {
-            console.log("WebSocket auth failed - No token provided");
-            ws.send(JSON.stringify({ type: "error", payload: "No token provided" }));
-            ws.close();
-            return;
-          }
-
-          const user = await storage.getUserByToken(token);
-          if (!user) {
-            console.log("WebSocket auth failed - Invalid token");
-            ws.send(JSON.stringify({ type: "error", payload: "Invalid token" }));
-            ws.close();
-            return;
-          }
-
-          ws.userId = user.id;
-          await storage.updateUserStatus(user.id, true);
-          console.log("WebSocket auth successful - User:", user.id);
-          await broadcastStatus(); // Broadcast status immediately after successful auth
-          return;
-        }
-
-        // All other messages require authentication
-        if (!ws.userId) {
-          console.log("WebSocket message rejected - Not authenticated");
-          ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
-          return;
-        }
-
-        switch (message.type) {
-          case "message":
-            const validatedMessage = insertMessageSchema.parse(message.payload);
-            const newMessage = await storage.createMessage(validatedMessage);
-            console.log("New message created:", newMessage.id);
-            broadcast({ type: "new_message", payload: newMessage });
-            break;
-
-          case "typing":
-            broadcast({ 
-              type: "typing", 
-              payload: { userId: ws.userId, isTyping: message.payload.isTyping } 
-            });
-            break;
-
-          case "read":
-            await storage.markMessageAsRead(message.payload.messageId);
-            broadcast({ type: "message_read", payload: message.payload });
-            break;
-
-          case "delete":
-            await storage.deleteMessage(message.payload.messageId);
-            broadcast({ type: "message_deleted", payload: message.payload });
-            break;
-
-          case "status_update":
-            await storage.updateUserStatus(ws.userId, message.payload.isOnline);
-            if (!message.payload.isOnline) {
-              await storage.updateLastSeen(ws.userId);
-            }
-            await broadcastStatus();
-            break;
-        }
-      } catch (err) {
-        console.error("WebSocket error:", err);
-        ws.send(JSON.stringify({ 
-          type: "error", 
-          payload: err instanceof Error ? err.message : "Unknown error" 
-        }));
-      }
-    });
-
-    ws.on("close", async () => {
-      console.log("WebSocket connection closed - User:", ws.userId);
-      if (ws.userId) {
-        await storage.updateUserStatus(ws.userId, false);
-        await storage.updateLastSeen(ws.userId);
-        await broadcastStatus(); // Broadcast status immediately after disconnection
-      }
-    });
-
-    ws.on("error", (error) => {
-      console.error("WebSocket error occurred:", error);
-    });
-  });
-
-  function broadcast(message: WSMessage) {
+  const broadcast = (message: any) => {
     wss.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(JSON.stringify(message));
       }
     });
-  }
+  };
+
+  wss.on("connection", (ws) => {
+    ws.on("message", async (data) => {
+      try {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.type === "message") {
+          const message = await storage.createMessage({
+            content: parsed.content,
+            userId: parsed.userId
+          });
+          const user = await storage.getUser(message.userId);
+          broadcast({
+            type: "message",
+            message: { ...message, username: user?.username || "Unknown" }
+          });
+        }
+      } catch (err) {
+        console.error("WebSocket message error:", err);
+      }
+    });
+  });
 
   return httpServer;
 }
