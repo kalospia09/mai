@@ -23,6 +23,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [onlineUsers, setOnlineUsers] = useState<number[]>([]);
   const [typingUsers, setTypingUsers] = useState<number[]>([]);
   const [statusData, setStatusData] = useState<ChatContextType['statusData']>([]);
+  const documentFocused = useRef<boolean>(document.hasFocus());
+  const documentVisible = useRef<boolean>(!document.hidden);
   const messageQueue = useRef<Set<string>>(new Set());
 
   const token = localStorage.getItem('authToken');
@@ -47,49 +49,81 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     }
   }, [initialMessages]);
 
-  // Handle window focus/blur with RAF for better accuracy
+  // Handle window focus and visibility changes
   useEffect(() => {
-    let focused = true;
-    let rafId: number;
-
-    const checkFocus = () => {
-      const isVisible = !document.hidden;
-      if (focused !== isVisible) {
-        focused = isVisible;
-        if (socket && user) {
-          socket.send(JSON.stringify({
-            type: "status_update",
-            payload: { isOnline: isVisible }
-          }));
-        }
-      }
-      rafId = requestAnimationFrame(checkFocus);
+    const handleVisibilityChange = () => {
+      documentVisible.current = !document.hidden;
+      console.log('Visibility changed:', documentVisible.current);
+      updateUserStatus();
     };
 
-    checkFocus();
-    document.addEventListener('visibilitychange', checkFocus);
+    const handleFocusChange = () => {
+      documentFocused.current = document.hasFocus();
+      console.log('Focus changed:', documentFocused.current);
+      updateUserStatus();
+    };
+
+    const updateUserStatus = () => {
+      const isActive = documentVisible.current && documentFocused.current;
+      console.log('Window active state:', isActive);
+      if (socket && user) {
+        socket.send(JSON.stringify({
+          type: "status_update",
+          payload: { isOnline: isActive }
+        }));
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocusChange);
+    window.addEventListener('blur', handleFocusChange);
 
     return () => {
-      cancelAnimationFrame(rafId);
-      document.removeEventListener('visibilitychange', checkFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocusChange);
+      window.removeEventListener('blur', handleFocusChange);
     };
   }, [socket, user]);
 
-  // Mark messages as read when visible and focused
+  // Check read status periodically when window is active
   useEffect(() => {
-    if (!document.hidden && user && socket) {
-      const unreadMessages = messages.filter(
-        msg => msg.senderId !== user.id && !msg.isRead
-      );
+    const checkReadStatus = () => {
+      const isActive = documentVisible.current && documentFocused.current;
+      if (isActive && user && socket) {
+        const unreadMessages = messages.filter(
+          msg => msg.senderId !== user.id && !msg.isRead
+        );
 
-      unreadMessages.forEach(msg => {
-        socket.send(JSON.stringify({
-          type: "read",
-          payload: { messageId: msg.id }
-        }));
-      });
-    }
-  }, [messages, user, socket, document.hidden]);
+        if (unreadMessages.length > 0) {
+          console.log('Marking messages as read:', unreadMessages.length);
+          unreadMessages.forEach(msg => {
+            socket.send(JSON.stringify({
+              type: "read",
+              payload: { messageId: msg.id }
+            }));
+          });
+        }
+      }
+    };
+
+    const interval = setInterval(checkReadStatus, 1000);
+
+    // Also check when visibility or focus changes
+    const handleStateChange = () => {
+      if (documentVisible.current && documentFocused.current) {
+        checkReadStatus();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleStateChange);
+    window.addEventListener('focus', handleStateChange);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleStateChange);
+      window.removeEventListener('focus', handleStateChange);
+    };
+  }, [messages, user, socket]);
 
   useEffect(() => {
     if (!user || !token) {
@@ -123,29 +157,36 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           token,
           payload: { 
             userId: user.id,
-            isOnline: !document.hidden
+            isOnline: documentVisible.current && documentFocused.current
           } 
         }));
       };
 
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
+        console.log("Received WebSocket message:", data.type);
 
         switch (data.type) {
           case "new_message":
-            // Prevent duplicate messages
             if (!messageQueue.current.has(data.payload.id)) {
+              messageQueue.current.add(data.payload.id);
               setMessages(prev => [...prev, data.payload]);
-              if (!document.hidden && data.payload.senderId !== user.id) {
+              const isActive = documentVisible.current && documentFocused.current;
+              if (isActive && data.payload.senderId !== user.id) {
+                console.log('Auto-marking message as read:', data.payload.id);
                 ws.send(JSON.stringify({
                   type: "read",
                   payload: { messageId: data.payload.id }
                 }));
               }
+              setTimeout(() => {
+                messageQueue.current.delete(data.payload.id);
+              }, 5000);
             }
             break;
 
           case "message_read":
+            console.log('Message marked as read:', data.payload.messageId);
             setMessages(prev => 
               prev.map(msg => 
                 msg.id === data.payload.messageId ? { ...msg, isRead: true } : msg
@@ -162,6 +203,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             break;
 
           case "status_update":
+            console.log('Status update received:', data.payload);
             setStatusData(data.payload);
             setOnlineUsers(data.payload
               .filter((status: any) => status.isOnline)
@@ -234,15 +276,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         mediaUrl
       }
     }));
-
-    // Clean up message queue after a delay
-    setTimeout(() => {
-      messageQueue.current.delete(messageId);
-    }, 5000);
   }, [socket, user]);
 
   const markAsRead = useCallback((messageId: number) => {
-    if (!socket) return;
+    if (!socket || !documentVisible.current || !documentFocused.current) return;
+    console.log('Manually marking message as read:', messageId);
     socket.send(JSON.stringify({
       type: "read",
       payload: { messageId }
