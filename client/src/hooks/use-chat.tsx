@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { useAuth } from "./use-auth";
-import { Message, User } from "@shared/schema";
+import { Message } from "@shared/schema";
 import { useQuery } from "@tanstack/react-query";
 
 type ChatContextType = {
@@ -43,73 +43,100 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/chat`;
-    const ws = new WebSocket(wsUrl);
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+    const maxReconnectAttempts = 5;
+    let reconnectAttempts = 0;
 
-    ws.onopen = () => {
-      console.log("WebSocket connection established");
-      // Send auth message immediately after connection
-      ws.send(JSON.stringify({ type: "auth", payload: { userId: user.id } }));
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log("Received WebSocket message:", data.type);
-
-      switch (data.type) {
-        case "new_message":
-          setMessages(prev => [...prev, data.payload]);
-          break;
-        case "message_read":
-          setMessages(prev => 
-            prev.map(msg => 
-              msg.id === data.payload.messageId ? { ...msg, isRead: true } : msg
-            )
-          );
-          break;
-        case "message_deleted":
-          setMessages(prev => 
-            prev.map(msg => 
-              msg.id === data.payload.messageId ? { ...msg, isDeleted: true } : msg
-            )
-          );
-          break;
-        case "status_update":
-          setOnlineUsers(data.payload.map((u: any) => u.userId));
-          break;
-        case "typing":
-          if (data.payload.isTyping) {
-            setTypingUsers(prev => [...prev, data.payload.userId]);
-          } else {
-            setTypingUsers(prev => prev.filter(id => id !== data.payload.userId));
-          }
-          break;
-        case "error":
-          console.error("WebSocket error from server:", data.payload);
-          break;
+    const connectWebSocket = () => {
+      if (reconnectAttempts >= maxReconnectAttempts) {
+        console.error("Max reconnection attempts reached");
+        return;
       }
+
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws/chat`;
+
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log("WebSocket connection established");
+        reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+        // Send auth message immediately after connection
+        ws.send(JSON.stringify({ type: "auth", payload: { userId: user.id } }));
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log("Received WebSocket message:", data.type);
+
+        switch (data.type) {
+          case "new_message":
+            setMessages(prev => [...prev, data.payload]);
+            break;
+          case "message_read":
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === data.payload.messageId ? { ...msg, isRead: true } : msg
+              )
+            );
+            break;
+          case "message_deleted":
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === data.payload.messageId ? { ...msg, isDeleted: true } : msg
+              )
+            );
+            break;
+          case "status_update":
+            setOnlineUsers(data.payload.map((u: any) => u.userId));
+            break;
+          case "typing":
+            if (data.payload.isTyping) {
+              setTypingUsers(prev => [...prev, data.payload.userId]);
+            } else {
+              setTypingUsers(prev => prev.filter(id => id !== data.payload.userId));
+            }
+            break;
+          case "error":
+            console.error("WebSocket error from server:", data.payload);
+            if (data.payload === "Not authenticated" || data.payload === "Invalid user") {
+              ws.close();
+              setSocket(null);
+            }
+            break;
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error("WebSocket error:", error);
+      };
+
+      ws.onclose = (event) => {
+        console.log("WebSocket connection closed", event.code, event.reason);
+
+        // Attempt to reconnect after a delay if user is still authenticated
+        if (user) {
+          reconnectAttempts++;
+          console.log(`Reconnection attempt ${reconnectAttempts} of ${maxReconnectAttempts}`);
+
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+          reconnectTimer = setTimeout(() => {
+            setSocket(null); // This will trigger a reconnect
+          }, delay);
+        }
+      };
+
+      setSocket(ws);
     };
 
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-    };
-
-    ws.onclose = () => {
-      console.log("WebSocket connection closed");
-      // Attempt to reconnect after a delay if user is still authenticated
-      if (user) {
-        setTimeout(() => {
-          setSocket(null); // This will trigger a reconnect
-        }, 5000);
-      }
-    };
-
-    setSocket(ws);
+    connectWebSocket();
 
     return () => {
-      console.log("Cleaning up WebSocket connection");
-      ws.close();
+      clearTimeout(reconnectTimer);
+      if (socket) {
+        console.log("Cleaning up WebSocket connection");
+        socket.close();
+      }
     };
   }, [user, socket === null]); // Reconnect if socket is null and user is authenticated
 
