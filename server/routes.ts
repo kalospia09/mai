@@ -14,17 +14,28 @@ interface WSClient extends WebSocket {
 type WSMessage = {
   type: string;
   payload: any;
+  token?: string;
 };
 
 export async function registerRoutes(app: Express): Promise<Server> {
   setupAuth(app);
 
   const httpServer = createServer(app);
-  // Changed WebSocket path to avoid conflict with Vite
   const wss = new WebSocketServer({ server: httpServer, path: '/ws/chat' });
 
   app.get("/api/messages", async (req, res) => {
-    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
+
+    if (!token) {
+      return res.sendStatus(401);
+    }
+
+    const user = await storage.getUserByToken(token);
+    if (!user) {
+      return res.sendStatus(401);
+    }
+
     const messages = await storage.getMessages();
     res.json(messages);
   });
@@ -60,28 +71,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const message: WSMessage = JSON.parse(data);
         console.log("Received WebSocket message:", message.type);
 
-        switch (message.type) {
-          case "auth":
-            const userId = message.payload.userId;
-            const user = await storage.getUser(userId);
-            if (!user) {
-              console.log("WebSocket auth failed - Invalid user:", userId);
-              ws.send(JSON.stringify({ type: "error", payload: "Invalid user" }));
-              ws.close();
-              return;
-            }
-            ws.userId = userId;
-            await storage.updateUserStatus(userId, true);
-            console.log("WebSocket auth successful - User:", userId);
-            broadcastStatus();
-            break;
+        // Handle auth separately as it needs the token
+        if (message.type === "auth") {
+          const token = message.token;
+          if (!token) {
+            console.log("WebSocket auth failed - No token provided");
+            ws.send(JSON.stringify({ type: "error", payload: "No token provided" }));
+            ws.close();
+            return;
+          }
 
+          const user = await storage.getUserByToken(token);
+          if (!user) {
+            console.log("WebSocket auth failed - Invalid token");
+            ws.send(JSON.stringify({ type: "error", payload: "Invalid token" }));
+            ws.close();
+            return;
+          }
+
+          ws.userId = user.id;
+          await storage.updateUserStatus(user.id, true);
+          console.log("WebSocket auth successful - User:", user.id);
+          broadcastStatus();
+          return;
+        }
+
+        // All other messages require authentication
+        if (!ws.userId) {
+          console.log("WebSocket message rejected - Not authenticated");
+          ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
+          return;
+        }
+
+        switch (message.type) {
           case "message":
-            if (!ws.userId) {
-              console.log("WebSocket message rejected - Not authenticated");
-              ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
-              return;
-            }
             const validatedMessage = insertMessageSchema.parse(message.payload);
             const newMessage = await storage.createMessage(validatedMessage);
             console.log("New message created:", newMessage.id);
@@ -89,11 +112,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             break;
 
           case "typing":
-            if (!ws.userId) {
-              console.log("WebSocket typing rejected - Not authenticated");
-              ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
-              return;
-            }
             broadcast({ 
               type: "typing", 
               payload: { userId: ws.userId, isTyping: message.payload.isTyping } 
@@ -101,21 +119,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             break;
 
           case "read":
-            if (!ws.userId) {
-              console.log("WebSocket read status rejected - Not authenticated");
-              ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
-              return;
-            }
             await storage.markMessageAsRead(message.payload.messageId);
             broadcast({ type: "message_read", payload: message.payload });
             break;
 
           case "delete":
-            if (!ws.userId) {
-              console.log("WebSocket delete rejected - Not authenticated");
-              ws.send(JSON.stringify({ type: "error", payload: "Not authenticated" }));
-              return;
-            }
             await storage.deleteMessage(message.payload.messageId);
             broadcast({ type: "message_deleted", payload: message.payload });
             break;
@@ -130,7 +138,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     ws.on("close", async () => {
-      console.log("WebSocket connection closed, userId:", ws.userId);
+      console.log("WebSocket connection closed - User:", ws.userId);
       if (ws.userId) {
         await storage.updateUserStatus(ws.userId, false);
         await storage.updateLastSeen(ws.userId);

@@ -22,9 +22,20 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [onlineUsers, setOnlineUsers] = useState<number[]>([]);
   const [typingUsers, setTypingUsers] = useState<number[]>([]);
 
+  const token = localStorage.getItem('authToken');
+
   const { data: initialMessages } = useQuery<Message[]>({
     queryKey: ["/api/messages"],
-    enabled: !!user // Only fetch messages when user is authenticated
+    enabled: !!user && !!token,
+    queryFn: async ({ queryKey }) => {
+      const res = await fetch(queryKey[0] as string, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (!res.ok) throw new Error('Failed to fetch messages');
+      return res.json();
+    }
   });
 
   useEffect(() => {
@@ -34,8 +45,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [initialMessages]);
 
   useEffect(() => {
-    // Only establish WebSocket connection if user is authenticated
-    if (!user) {
+    if (!user || !token) {
       if (socket) {
         socket.close();
         setSocket(null);
@@ -61,8 +71,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       ws.onopen = () => {
         console.log("WebSocket connection established");
         reconnectAttempts = 0; // Reset reconnect attempts on successful connection
-        // Send auth message immediately after connection
-        ws.send(JSON.stringify({ type: "auth", payload: { userId: user.id } }));
+        // Send auth message with token immediately after connection
+        ws.send(JSON.stringify({ 
+          type: "auth", 
+          token,
+          payload: { userId: user.id } 
+        }));
       };
 
       ws.onmessage = (event) => {
@@ -99,7 +113,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             break;
           case "error":
             console.error("WebSocket error from server:", data.payload);
-            if (data.payload === "Not authenticated" || data.payload === "Invalid user") {
+            if (data.payload === "Not authenticated" || data.payload === "Invalid token") {
               ws.close();
               setSocket(null);
             }
@@ -115,7 +129,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         console.log("WebSocket connection closed", event.code, event.reason);
 
         // Attempt to reconnect after a delay if user is still authenticated
-        if (user) {
+        if (user && token) {
           reconnectAttempts++;
           console.log(`Reconnection attempt ${reconnectAttempts} of ${maxReconnectAttempts}`);
 
@@ -138,7 +152,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         socket.close();
       }
     };
-  }, [user, socket === null]); // Reconnect if socket is null and user is authenticated
+  }, [user, token, socket === null]); // Reconnect if socket is null and user is authenticated
 
   const sendMessage = (content: string, replyToId?: number, mediaUrl?: string) => {
     if (!socket || !user) return;

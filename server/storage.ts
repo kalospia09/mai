@@ -1,8 +1,5 @@
 import { User, Message, InsertUser, InsertMessage } from "@shared/schema";
-import session from "express-session";
-import createMemoryStore from "memorystore";
-
-const MemoryStore = createMemoryStore(session);
+import { randomBytes } from "crypto";
 
 // Predefined users
 const PREDEFINED_USERS: User[] = [
@@ -10,6 +7,7 @@ const PREDEFINED_USERS: User[] = [
     id: 1,
     username: "user1",
     password: "1",
+    authToken: null,
     lastSeen: new Date(),
     isOnline: false,
   },
@@ -17,6 +15,7 @@ const PREDEFINED_USERS: User[] = [
     id: 2,
     username: "user2",
     password: "2",
+    authToken: null,
     lastSeen: new Date(),
     isOnline: false,
   }
@@ -25,6 +24,8 @@ const PREDEFINED_USERS: User[] = [
 export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
+  getUserByToken(token: string): Promise<User | undefined>;
+  generateUserToken(id: number): Promise<string>;
   updateUserStatus(id: number, isOnline: boolean): Promise<void>;
   updateLastSeen(id: number): Promise<void>;
 
@@ -32,21 +33,15 @@ export interface IStorage {
   createMessage(message: InsertMessage): Promise<Message>;
   markMessageAsRead(id: number): Promise<void>;
   deleteMessage(id: number): Promise<void>;
-
-  sessionStore: session.Store;
 }
 
 export class MemStorage implements IStorage {
   private users: Map<number, User>;
   private messages: Map<number, Message>;
-  sessionStore: session.Store;
 
   constructor() {
     this.users = new Map();
     this.messages = new Map();
-    this.sessionStore = new MemoryStore({
-      checkPeriod: 86400000,
-    });
 
     // Initialize with predefined users
     PREDEFINED_USERS.forEach(user => {
@@ -62,6 +57,22 @@ export class MemStorage implements IStorage {
     return Array.from(this.users.values()).find(
       (user) => user.username === username,
     );
+  }
+
+  async getUserByToken(token: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(
+      (user) => user.authToken === token,
+    );
+  }
+
+  async generateUserToken(id: number): Promise<string> {
+    const user = await this.getUser(id);
+    if (user) {
+      const token = randomBytes(32).toString('hex');
+      this.users.set(id, { ...user, authToken: token });
+      return token;
+    }
+    throw new Error("User not found");
   }
 
   async updateUserStatus(id: number, isOnline: boolean): Promise<void> {
@@ -83,13 +94,13 @@ export class MemStorage implements IStorage {
   }
 
   async createMessage(insertMessage: InsertMessage): Promise<Message> {
-    const id = 100 + this.messages.size; //Start message IDs from 100
+    const id = 100 + this.messages.size; // Start message IDs from 100
     const message: Message = {
-      ...insertMessage,
       id,
       timestamp: new Date(),
       isRead: false,
-      isDeleted: false
+      isDeleted: false,
+      ...insertMessage,
     };
     this.messages.set(id, message);
     return message;
@@ -108,8 +119,6 @@ export class MemStorage implements IStorage {
       this.messages.set(id, { ...message, isDeleted: true });
     }
   }
-
-  private currentId = 100; // Start message IDs from 100
 }
 
 export const storage = new MemStorage();
